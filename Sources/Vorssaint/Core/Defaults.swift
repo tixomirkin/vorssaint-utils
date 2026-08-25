@@ -1646,8 +1646,6 @@ enum Defaults {
     static func sanitizedPreferredInputDeviceUID(_ value: Any?) -> String? {
         MixerRoutingSupport.sanitizedDeviceUID(value)
     }
-}
-
     private static func migrateMouseButtonActions(in defaults: UserDefaults) {
         guard let domainName = Bundle.main.bundleIdentifier,
               let domain = defaults.persistentDomain(forName: domainName) else { return }
@@ -1673,3 +1671,5 @@ enum Defaults {
             }
         }
     }
+
+}
