@@ -289,7 +289,7 @@ final class MouseButtonShortcutService: ObservableObject {
             guard !MouseAppExceptions.shared.excludesActionTarget(.buttonShortcuts, at: event.location) else {
                 return Unmanaged.passUnretained(event)
             }
-            guard let config = mappings[button],
+            guard mappings[button] != nil,
                   AppFeature.mouseButtonShortcuts.isAvailable,
                   UserDefaults.standard.bool(forKey: DefaultsKey.mouseButtonShortcutsEnabled),
                   !RadialMenuSupport.claimsMouseButton(button)
