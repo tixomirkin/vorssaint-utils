@@ -98,6 +98,40 @@ enum MouseButtonShortcutSupport {
     /// storage form every other shortcut in the app uses. Anything that does
     /// not parse (a hand-edited plist, an imported backup from a newer
     /// version) is dropped rather than trusted.
+
+
+    static func decodeActions(_ rawData: Data?) -> [Int64: MouseButtonConfig] {
+        guard let rawData = rawData else { return [:] }
+        do {
+            let decoder = JSONDecoder()
+            let decodedMap = try decoder.decode([String: MouseButtonConfig].self, from: rawData)
+            var result: [Int64: MouseButtonConfig] = [:]
+            for (key, config) in decodedMap {
+                if let button = Int64(key), canMap(button) {
+                    result[button] = config
+                }
+            }
+            return result
+        } catch {
+            return [:]
+        }
+    }
+
+    static func encodeActions(_ mappings: [Int64: MouseButtonConfig]) -> Data? {
+        var stringMap: [String: MouseButtonConfig] = [:]
+        for (button, config) in mappings {
+            if canMap(button) {
+                stringMap[String(button)] = config
+            }
+        }
+        do {
+            let encoder = JSONEncoder()
+            return try encoder.encode(stringMap)
+        } catch {
+            return nil
+        }
+    }
+
     static func decode(_ raw: [String: String]?) -> [Int64: GlobalShortcut] {
         guard let raw else { return [:] }
         var mappings: [Int64: GlobalShortcut] = [:]
@@ -138,9 +172,13 @@ enum MouseButtonShortcutSupport {
         guard defaults.bool(forKey: AppFeature.mouseButtonShortcuts.availabilityKey),
               defaults.bool(forKey: DefaultsKey.mouseButtonShortcutsEnabled),
               !RadialMenuSupport.claimsMouseButton(button) else { return false }
-        // Runs inside a HID tap callback during side-button drags: look up
-        // just this button's entry instead of decoding the whole dictionary.
         guard canMap(button) else { return false }
+        // Fast path for new structure
+        if let rawData = defaults.data(forKey: DefaultsKey.mouseButtonActions) {
+            let actions = decodeActions(rawData)
+            return actions[button] != nil
+        }
+        // Fallback for legacy structure
         let raw = defaults.dictionary(forKey: DefaultsKey.mouseButtonShortcuts) as? [String: String]
         guard let stored = raw?[String(button)] else { return false }
         return GlobalShortcut(storageValue: stored) != nil
@@ -148,6 +186,10 @@ enum MouseButtonShortcutSupport {
 
     /// The rows in Settings sort by button number so the list never reorders
     /// itself between visits.
+    static func sortedButtons(_ mappings: [Int64: MouseButtonConfig]) -> [Int64] {
+        mappings.keys.sorted()
+    }
+
     static func sortedButtons(_ mappings: [Int64: GlobalShortcut]) -> [Int64] {
         mappings.keys.sorted()
     }

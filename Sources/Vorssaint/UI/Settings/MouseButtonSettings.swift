@@ -12,8 +12,9 @@ struct MouseButtonShortcutsSection: View {
     @ObservedObject private var service = MouseButtonShortcutService.shared
     @AppStorage(DefaultsKey.mouseButtonShortcutsEnabled) private var enabled = false
 
-    @State private var mappings = MouseButtonShortcutSupport.decode(
-        UserDefaults.standard.dictionary(forKey: DefaultsKey.mouseButtonShortcuts) as? [String: String])
+    @State private var mappings: [Int64: MouseButtonConfig] = MouseButtonShortcutSupport.decodeActions(
+        UserDefaults.standard.data(forKey: DefaultsKey.mouseButtonActions)
+    )
     /// A button that was just captured and is waiting for its first key
     /// combination. Nothing persists until the combination lands, so backing
     /// out leaves no half-made row behind.
@@ -48,10 +49,10 @@ struct MouseButtonShortcutsSection: View {
                         .foregroundStyle(.secondary)
                 }
                 ForEach(MouseButtonShortcutSupport.sortedButtons(mappings), id: \.self) { button in
-                    mappingRow(button, shortcut: mappings[button])
+                    mappingRow(button, config: mappings[button])
                 }
                 if let pendingButton {
-                    mappingRow(pendingButton, shortcut: nil)
+                    mappingRow(pendingButton, config: nil)
                 }
                 captureRow
                 MouseExceptionsList(scope: .buttonShortcuts)
@@ -65,23 +66,12 @@ struct MouseButtonShortcutsSection: View {
 
     // MARK: - Rows
 
-    private func mappingRow(_ button: Int64, shortcut: GlobalShortcut?) -> some View {
+    private func mappingRow(_ button: Int64, config: MouseButtonConfig?) -> some View {
         VStack(alignment: .leading, spacing: 5) {
             HStack(spacing: 8) {
                 Text(MouseButtonShortcutSupport.buttonName(for: button, strings: text))
+                    .bold()
                 Spacer()
-                ShortcutRecorderButton(shortcut: shortcut ?? GlobalShortcut.keepAwakeDefault,
-                                       isEnabled: true,
-                                       waitingTitle: l10n.s.shortcutPressKeys,
-                                       emptyTitle: shortcut == nil ? text.setShortcutButton : nil,
-                                       notCapturedAction: { setRecordError(l10n.s.shortcutNotCaptured, button) },
-                                       recordingChanged: { recording in
-                                           recordingButton = recording ? button : nil
-                                           if recording { setRecordError(nil, button) }
-                                       },
-                                       invalidAction: { setRecordError(l10n.s.shortcutInvalid, button) },
-                                       captureAction: { save(button: button, shortcut: $0) })
-                    .frame(width: 108)
                 Button {
                     remove(button)
                 } label: {
@@ -93,19 +83,62 @@ struct MouseButtonShortcutsSection: View {
                 .help(text.removeButton)
                 .accessibilityLabel(text.removeButton)
             }
-            if let recordError, recordErrorButton == button {
-                Text(recordError)
-                    .font(.caption)
-                    .foregroundStyle(.orange)
-            } else if recordingButton == button {
-                Text(ShortcutRecordingCaption.text(l10n.s, canClear: false))
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
+
+            // Sub-actions
+            let currentConfig = config ?? MouseButtonConfig()
+
+            actionPickerRow(button: button, label: "Click", actionPath: \.click, currentConfig: currentConfig)
+            actionPickerRow(button: button, label: "Hold", actionPath: \.hold, currentConfig: currentConfig)
+            actionPickerRow(button: button, label: "Drag", actionPath: \.drag, currentConfig: currentConfig)
+            actionPickerRow(button: button, label: "Scroll", actionPath: \.scroll, currentConfig: currentConfig)
+        }
+        .padding(.vertical, 4)
+    }
+
+    private func actionPickerRow(button: Int64, label: String, actionPath: WritableKeyPath<MouseButtonConfig, MouseButtonAction?>, currentConfig: MouseButtonConfig) -> some View {
+        HStack(spacing: 8) {
+            Text(label)
+                .font(.subheadline)
+                .frame(width: 50, alignment: .leading)
+
+            let action = currentConfig[keyPath: actionPath]
+
+            Picker("", selection: Binding<String>(
+                get: { action?.type.rawValue ?? "none" },
+                set: { newValue in
+                    var newConfig = currentConfig
+                    if newValue == "none" {
+                        newConfig[keyPath: actionPath] = nil
+                    } else if let type = MouseButtonActionType(rawValue: newValue) {
+                        newConfig[keyPath: actionPath] = MouseButtonAction(type: type)
+                    }
+                    saveConfig(button: button, config: newConfig)
+                }
+            )) {
+                Text("None").tag("none")
+                Text("Shortcut").tag(MouseButtonActionType.shortcut.rawValue)
+                Text("Spaces & Mission Control").tag(MouseButtonActionType.missionControlAndSpaces.rawValue)
             }
-            if shortcut != nil, RadialMenuSupport.claimsMouseButton(button) {
-                Text(text.rowWheelNote)
-                    .font(.caption)
-                    .foregroundStyle(.orange)
+            .labelsHidden()
+            .frame(width: 180)
+
+            if action?.type == .shortcut {
+                ShortcutRecorderButton(shortcut: action?.shortcut ?? GlobalShortcut.keepAwakeDefault,
+                                       isEnabled: true,
+                                       waitingTitle: l10n.s.shortcutPressKeys,
+                                       emptyTitle: action?.shortcut == nil ? text.setShortcutButton : nil,
+                                       notCapturedAction: { setRecordError(l10n.s.shortcutNotCaptured, button) },
+                                       recordingChanged: { recording in
+                                           recordingButton = recording ? button : nil
+                                           if recording { setRecordError(nil, button) }
+                                       },
+                                       invalidAction: { setRecordError(l10n.s.shortcutInvalid, button) },
+                                       captureAction: { shortcut in
+                                            var newConfig = currentConfig
+                                            newConfig[keyPath: actionPath] = MouseButtonAction(type: .shortcut, shortcut: shortcut)
+                                            saveConfig(button: button, config: newConfig)
+                                       })
+                    .frame(width: 108)
             }
         }
     }
@@ -188,12 +221,13 @@ struct MouseButtonShortcutsSection: View {
         recordErrorButton = message == nil ? nil : button
     }
 
-    private func save(button: Int64, shortcut: GlobalShortcut) {
-        mappings[button] = shortcut
+    private func saveConfig(button: Int64, config: MouseButtonConfig) {
+        mappings[button] = config
         if pendingButton == button { pendingButton = nil }
         setRecordError(nil, button)
         persist()
     }
+
 
     private func remove(_ button: Int64) {
         if recordErrorButton == button { setRecordError(nil, button) }
@@ -206,8 +240,11 @@ struct MouseButtonShortcutsSection: View {
     }
 
     private func persist() {
-        UserDefaults.standard.set(MouseButtonShortcutSupport.encode(mappings),
-                                  forKey: DefaultsKey.mouseButtonShortcuts)
+        if let data = MouseButtonShortcutSupport.encodeActions(mappings) {
+            UserDefaults.standard.set(data, forKey: DefaultsKey.mouseButtonActions)
+        } else {
+            UserDefaults.standard.removeObject(forKey: DefaultsKey.mouseButtonActions)
+        }
         MouseButtonShortcutService.shared.syncWithPreferences()
     }
 }

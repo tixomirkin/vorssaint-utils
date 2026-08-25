@@ -43,7 +43,8 @@ enum DefaultsKey {
     static let smoothScrollStep = "smoothScrollStep"      // pixels per wheel tick
     static let mouseNavigationEnabled = "mouseNavigationEnabled" // side buttons trigger Back and Forward
     static let mouseButtonShortcutsEnabled = "mouseButtonShortcutsEnabled" // extra buttons press a key combination (issue #282)
-    static let mouseButtonShortcuts = "mouseButtonShortcuts" // [button number: GlobalShortcut storage value]
+    static let mouseButtonShortcuts = "mouseButtonShortcuts" // Legacy [button number: GlobalShortcut storage value]
+    static let mouseButtonActions = "mouseButtonActions" // [button number: MouseButtonConfig data]
     static let superKeyEnabled = "superKeyEnabled"        // Caps Lock holds the chosen modifiers (issue #330)
     static let superKeyModifiers = "superKeyModifiers"     // GlobalShortcutModifiers storage tokens
     static let superKeySoloAction = "superKeySoloAction"  // SuperKeySoloAction raw value
@@ -1247,6 +1248,7 @@ enum Defaults {
         migrateRestoredScreenCaptureShortcuts(in: defaults)
         migrateSilentHeadphonesDisconnectVolume(in: defaults)
         migrateSwitcherWindowlessFinder(in: defaults)
+        migrateMouseButtonActions(in: defaults)
     }
 
     /// When the user installs or runs a beta pre-release, activate the beta
@@ -1644,4 +1646,30 @@ enum Defaults {
     static func sanitizedPreferredInputDeviceUID(_ value: Any?) -> String? {
         MixerRoutingSupport.sanitizedDeviceUID(value)
     }
+    private static func migrateMouseButtonActions(in defaults: UserDefaults) {
+        guard let domainName = Bundle.main.bundleIdentifier,
+              let domain = defaults.persistentDomain(forName: domainName) else { return }
+
+        // If we already have the new actions format, we don't need to migrate
+        if domain[DefaultsKey.mouseButtonActions] != nil { return }
+
+        // Migrate old shortcuts to new actions format (mapping to 'click' action)
+        if let oldShortcuts = domain[DefaultsKey.mouseButtonShortcuts] as? [String: String] {
+            var newActions: [Int64: MouseButtonConfig] = [:]
+
+            for (key, value) in oldShortcuts {
+                guard let button = Int64(key),
+                      MouseButtonShortcutSupport.canMap(button),
+                      let shortcut = GlobalShortcut(storageValue: value) else { continue }
+
+                let action = MouseButtonAction(type: .shortcut, shortcut: shortcut)
+                newActions[button] = MouseButtonConfig(click: action)
+            }
+
+            if !newActions.isEmpty {
+                defaults.set(MouseButtonShortcutSupport.encodeActions(newActions), forKey: DefaultsKey.mouseButtonActions)
+            }
+        }
+    }
+
 }
