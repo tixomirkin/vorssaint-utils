@@ -31,7 +31,10 @@ final class MouseButtonShortcutService: ObservableObject {
     /// opening the wheel. Main thread only, like the taps that read it.
     private(set) static var isCaptureActive = false
 
-    private var mappings: [Int64: GlobalShortcut] = [:]
+    private var mappings: [Int64: MouseButtonConfig] = [:]
+    private var activeDrag: (button: Int64, type: MouseButtonActionType)? = nil
+    private var buttonDownLocation: CGPoint = .zero
+    private var buttonDownTimestamp: UInt64 = 0
     private var tap: CFMachPort?
     private var runLoopSource: CFRunLoopSource?
     private var tapIncludesSideWheel = false
@@ -139,6 +142,7 @@ final class MouseButtonShortcutService: ObservableObject {
         var mask = (CGEventMask(1) << CGEventType.otherMouseDown.rawValue)
             | (CGEventMask(1) << CGEventType.otherMouseUp.rawValue)
             | (CGEventMask(1) << CGEventType.otherMouseDragged.rawValue)
+            | (CGEventMask(1) << CGEventType.otherMouseDragged.rawValue)
         if wantsSideWheelEvents {
             mask |= CGEventMask(1) << CGEventType.scrollWheel.rawValue
         }
@@ -211,6 +215,40 @@ final class MouseButtonShortcutService: ObservableObject {
     }
 
     private func handle(type: CGEventType, event: CGEvent) -> Unmanaged<CGEvent>? {
+        if type == .otherMouseDragged {
+            let button = event.getIntegerValueField(.mouseEventButtonNumber)
+            guard consumedButtons.contains(button), let config = mappings[button] else { return Unmanaged.passUnretained(event) }
+
+            let deltaX = event.location.x - buttonDownLocation.x
+            let deltaY = event.location.y - buttonDownLocation.y
+            let dist = sqrt(deltaX * deltaX + deltaY * deltaY)
+
+            if activeDrag == nil, dist > 5 {
+                // Determine direction
+                if let dragAction = config.drag {
+                    activeDrag = (button, dragAction.type)
+                    if dragAction.type == .missionControlAndSpaces {
+                        if abs(deltaX) > abs(deltaY) {
+                            GestureSimulation.beginDockSwipe(delta: deltaX, type: .horizontal)
+                        } else {
+                            GestureSimulation.beginDockSwipe(delta: -deltaY, type: .vertical)
+                        }
+                    } else if dragAction.type == .shortcut, let shortcut = dragAction.shortcut {
+                        post(shortcut)
+                    }
+                }
+            } else if let drag = activeDrag, drag.button == button {
+                if drag.type == .missionControlAndSpaces {
+                    if abs(deltaX) > abs(deltaY) {
+                        GestureSimulation.updateDockSwipe(delta: deltaX, type: .horizontal)
+                    } else {
+                        GestureSimulation.updateDockSwipe(delta: -deltaY, type: .vertical)
+                    }
+                }
+            }
+
+            return nil
+        }
         if type == .tapDisabledByTimeout || type == .tapDisabledByUserInput {
             sideWheelGesture.reset()
             preflightedSideWheelTimestamp = nil
@@ -268,6 +306,30 @@ final class MouseButtonShortcutService: ObservableObject {
         }
         if type == .otherMouseUp {
             consumedButtons.remove(button)
+
+            if let drag = activeDrag, drag.button == button {
+                if drag.type == .missionControlAndSpaces {
+                    let deltaX = event.location.x - buttonDownLocation.x
+                    let deltaY = event.location.y - buttonDownLocation.y
+
+                    if abs(deltaX) > abs(deltaY) {
+                        GestureSimulation.endDockSwipe(delta: deltaX, type: .horizontal, exitSpeed: deltaX > 0 ? 5 : -5)
+                    } else {
+                        GestureSimulation.endDockSwipe(delta: -deltaY, type: .vertical, exitSpeed: deltaY < 0 ? 5 : -5)
+                    }
+                }
+                activeDrag = nil
+            } else {
+                let duration = Double(UInt64(event.timestamp) - buttonDownTimestamp) / 1_000_000_000.0
+                if let config = mappings[button] {
+                    if duration > 0.4, let holdAction = config.hold {
+                        if holdAction.type == .shortcut, let shortcut = holdAction.shortcut { post(shortcut) }
+                    } else if let clickAction = config.click {
+                        if clickAction.type == .shortcut, let shortcut = clickAction.shortcut { post(shortcut) }
+                    }
+                }
+            }
+
             // The drain existed only for this release; finishing outside the
             // callback keeps the mach port teardown off the tap's own stack.
             if isDraining, consumedButtons.isEmpty {
@@ -302,7 +364,7 @@ final class MouseButtonShortcutService: ObservableObject {
             }
             return nil
         }
-        guard let shortcut = mappings[input] else { return Unmanaged.passUnretained(event) }
+        guard let config = mappings[input], let clickAction = config.click, clickAction.type == .shortcut, let shortcut = clickAction.shortcut else { return Unmanaged.passUnretained(event) }
         let sourceProcessID = event.getIntegerValueField(.eventSourceUnixProcessID)
         if !wasPreflighted,
            MouseAppExceptions.shared.excludesActionTarget(
