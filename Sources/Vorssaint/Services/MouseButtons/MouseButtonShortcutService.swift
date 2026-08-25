@@ -34,6 +34,7 @@ final class MouseButtonShortcutService: ObservableObject {
     private var mappings: [Int64: MouseButtonConfig] = [:]
     private var activeDrag: (button: Int64, type: MouseButtonActionType)? = nil
     private var buttonDownLocation: CGPoint = .zero
+    private var lastDragLocation: CGPoint = .zero
     private var buttonDownTimestamp: UInt64 = 0
     private var tap: CFMachPort?
     private var runLoopSource: CFRunLoopSource?
@@ -230,15 +231,22 @@ final class MouseButtonShortcutService: ObservableObject {
             let deltaY = event.location.y - buttonDownLocation.y
             let dist = sqrt(deltaX * deltaX + deltaY * deltaY)
 
+            let screenSize = NSScreen.main?.frame.size ?? CGSize(width: 1920, height: 1080)
+            let threeFingerScaleH = 2.0 / (screenSize.width + 63.0)
+            let threeFingerScaleV = 1.0 / screenSize.height
+
             if activeDrag == nil, dist > 5 {
                 // Determine direction
                 if let dragAction = config.drag {
                     activeDrag = (button, dragAction.type)
                     if dragAction.type == .missionControlAndSpaces {
+                        // For the beginning of the swipe, we use the delta from button down
                         if abs(deltaX) > abs(deltaY) {
-                            GestureSimulation.beginDockSwipe(delta: deltaX, type: .horizontal)
+                            let scaledDelta = -deltaX * threeFingerScaleH
+                            GestureSimulation.beginDockSwipe(delta: scaledDelta, type: .horizontal)
                         } else {
-                            GestureSimulation.beginDockSwipe(delta: -deltaY, type: .vertical)
+                            let scaledDelta = deltaY * threeFingerScaleV
+                            GestureSimulation.beginDockSwipe(delta: scaledDelta, type: .vertical)
                         }
                     } else if dragAction.type == .shortcut, let shortcut = dragAction.shortcut {
                         post(shortcut)
@@ -246,14 +254,21 @@ final class MouseButtonShortcutService: ObservableObject {
                 }
             } else if let drag = activeDrag, drag.button == button {
                 if drag.type == .missionControlAndSpaces {
+                    // For updating the swipe, we use the incremental delta from the last drag location
+                    let incrementalDeltaX = event.location.x - lastDragLocation.x
+                    let incrementalDeltaY = event.location.y - lastDragLocation.y
+
                     if abs(deltaX) > abs(deltaY) {
-                        GestureSimulation.updateDockSwipe(delta: deltaX, type: .horizontal)
+                        let scaledDelta = -incrementalDeltaX * threeFingerScaleH
+                        GestureSimulation.updateDockSwipe(delta: scaledDelta, type: .horizontal)
                     } else {
-                        GestureSimulation.updateDockSwipe(delta: -deltaY, type: .vertical)
+                        let scaledDelta = incrementalDeltaY * threeFingerScaleV
+                        GestureSimulation.updateDockSwipe(delta: scaledDelta, type: .vertical)
                     }
                 }
             }
 
+            lastDragLocation = event.location
             return nil
         }
         if type == .tapDisabledByTimeout || type == .tapDisabledByUserInput {
@@ -297,6 +312,7 @@ final class MouseButtonShortcutService: ObservableObject {
 
             consumedButtons.insert(button)
             buttonDownLocation = event.location
+            lastDragLocation = event.location
             buttonDownTimestamp = UInt64(event.timestamp)
             return nil
         }
@@ -314,10 +330,18 @@ final class MouseButtonShortcutService: ObservableObject {
                     let deltaX = event.location.x - buttonDownLocation.x
                     let deltaY = event.location.y - buttonDownLocation.y
 
+                    let incrementalDeltaX = event.location.x - lastDragLocation.x
+                    let incrementalDeltaY = event.location.y - lastDragLocation.y
+
+                    // We approximate the exit speed based on the incremental delta (which is proportional to recent velocity)
+                    // The horizontal delta is inverted just like in the begin/update steps.
+                    let exitSpeedX = -incrementalDeltaX * 100.0
+                    let exitSpeedY = incrementalDeltaY * 100.0
+
                     if abs(deltaX) > abs(deltaY) {
-                        GestureSimulation.endDockSwipe(delta: deltaX, type: .horizontal, exitSpeed: deltaX > 0 ? 5 : -5)
+                        GestureSimulation.endDockSwipe(delta: 0, type: .horizontal, exitSpeed: exitSpeedX)
                     } else {
-                        GestureSimulation.endDockSwipe(delta: -deltaY, type: .vertical, exitSpeed: deltaY < 0 ? 5 : -5)
+                        GestureSimulation.endDockSwipe(delta: 0, type: .vertical, exitSpeed: exitSpeedY)
                     }
                 }
                 activeDrag = nil

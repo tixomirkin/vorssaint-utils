@@ -35,12 +35,14 @@ enum GestureSimulation {
     static func updateDockSwipe(delta: Double, type: DockSwipeType) {
         guard isSynthesizing else { return }
         if delta == 0 { return }
-        postDockSwipe(delta: delta, type: type, phase: .changed, exitSpeed: 0)
+        currentOriginOffset += delta
+        postDockSwipe(delta: currentOriginOffset, type: type, phase: .changed, exitSpeed: 0)
     }
 
     static func endDockSwipe(delta: Double, type: DockSwipeType, exitSpeed: Double = 0) {
         guard isSynthesizing else { return }
-        postDockSwipe(delta: delta, type: type, phase: .ended, exitSpeed: exitSpeed)
+        // For the end gesture, we also pass the final accumulated offset
+        postDockSwipe(delta: currentOriginOffset, type: type, phase: .ended, exitSpeed: exitSpeed)
         isSynthesizing = false
         currentOriginOffset = 0
     }
@@ -62,10 +64,12 @@ enum GestureSimulation {
 
         // Type 29 (NSEventTypeGesture)
         e29.type = CGEventType(rawValue: 29)! // NSEventTypeGesture
+        e29.setDoubleValueField(CGEventField(rawValue: 55)!, value: 29)
         e29.setDoubleValueField(CGEventField(rawValue: 41)!, value: 33231) // Magic value
 
         // Type 30 (used for Dock Swipes)
         e30.type = CGEventType(rawValue: 30)! // NSEventTypeMagnify
+        e30.setDoubleValueField(CGEventField(rawValue: 55)!, value: 30)
         e30.setDoubleValueField(CGEventField(rawValue: 110)!, value: 13) // kIOHIDEventTypeDockSwipe is 13
         e30.setDoubleValueField(CGEventField(rawValue: 132)!, value: Double(phase.rawValue))
         e30.setDoubleValueField(CGEventField(rawValue: 134)!, value: Double(phase.rawValue))
