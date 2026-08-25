@@ -6,7 +6,7 @@ import Carbon.HIToolbox
 import CoreGraphics
 import Foundation
 
-struct GlobalShortcutModifiers: OptionSet, Hashable {
+struct GlobalShortcutModifiers: OptionSet, Hashable, Codable {
     let rawValue: Int
 
     init(rawValue: Int) {
@@ -19,6 +19,19 @@ struct GlobalShortcutModifiers: OptionSet, Hashable {
     static let command = GlobalShortcutModifiers(rawValue: 1 << 3)
 
     static let validMask: GlobalShortcutModifiers = [.control, .option, .shift, .command]
+
+    enum CodingKeys: String, CodingKey {
+        case rawValue
+    }
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        rawValue = try container.decode(Int.self, forKey: .rawValue)
+    }
+    func encode(to encoder: Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encode(rawValue, forKey: .rawValue)
+    }
+
 
     var hasPrimaryModifier: Bool {
         contains(.control) || contains(.option) || contains(.command)
@@ -79,7 +92,7 @@ struct GlobalShortcutModifiers: OptionSet, Hashable {
     }
 }
 
-struct GlobalShortcut: Equatable, Hashable {
+struct GlobalShortcut: Equatable, Hashable, Codable {
     let keyCode: Int64
     let modifiers: GlobalShortcutModifiers
 
@@ -87,6 +100,22 @@ struct GlobalShortcut: Equatable, Hashable {
         self.keyCode = keyCode
         self.modifiers = modifiers.intersection(.validMask)
     }
+
+    enum CodingKeys: String, CodingKey {
+        case keyCode
+        case modifiers
+    }
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        keyCode = try container.decode(Int64.self, forKey: .keyCode)
+        modifiers = try container.decode(GlobalShortcutModifiers.self, forKey: .modifiers)
+    }
+    func encode(to encoder: Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encode(keyCode, forKey: .keyCode)
+        try container.encode(modifiers, forKey: .modifiers)
+    }
+
 
     init?(storageValue: String) {
         guard let separator = storageValue.firstIndex(of: ":"),

@@ -65,8 +65,11 @@ final class MouseButtonShortcutService: ObservableObject {
         let defaults = UserDefaults.standard
         let enabled = AppFeature.mouseButtonShortcuts.isAvailable
             && defaults.bool(forKey: DefaultsKey.mouseButtonShortcutsEnabled)
-        mappings = MouseButtonShortcutSupport.decode(
-            defaults.dictionary(forKey: DefaultsKey.mouseButtonShortcuts) as? [String: String])
+        if let rawData = defaults.data(forKey: DefaultsKey.mouseButtonActions) {
+            mappings = MouseButtonShortcutSupport.decodeActions(rawData)
+        } else {
+            mappings = [:]
+        }
         wantsSideWheelEvents = enabled && (isCapturing
             || mappings[MouseButtonShortcutSupport.sideWheelLeftInput] != nil
             || mappings[MouseButtonShortcutSupport.sideWheelRightInput] != nil)
@@ -215,8 +218,12 @@ final class MouseButtonShortcutService: ObservableObject {
     }
 
     private func handle(type: CGEventType, event: CGEvent) -> Unmanaged<CGEvent>? {
+        if type == .scrollWheel {
+            return handleSideWheel(event)
+        }
+        let button = event.getIntegerValueField(.mouseEventButtonNumber)
+
         if type == .otherMouseDragged {
-            let button = event.getIntegerValueField(.mouseEventButtonNumber)
             guard consumedButtons.contains(button), let config = mappings[button] else { return Unmanaged.passUnretained(event) }
 
             let deltaX = event.location.x - buttonDownLocation.x
@@ -256,11 +263,6 @@ final class MouseButtonShortcutService: ObservableObject {
             if let tap { CGEvent.tapEnable(tap: tap, enable: true) }
             return Unmanaged.passUnretained(event)
         }
-        if type == .scrollWheel {
-            return handleSideWheel(event)
-        }
-        let button = event.getIntegerValueField(.mouseEventButtonNumber)
-
         if type == .otherMouseDown {
             if isDraining {
                 return Unmanaged.passUnretained(event)
@@ -287,15 +289,15 @@ final class MouseButtonShortcutService: ObservableObject {
             guard !MouseAppExceptions.shared.excludesActionTarget(.buttonShortcuts, at: event.location) else {
                 return Unmanaged.passUnretained(event)
             }
-            guard let shortcut = MouseButtonShortcutSupport.firesShortcut(
-                for: button,
-                isAvailable: AppFeature.mouseButtonShortcuts.isAvailable,
-                isEnabled: UserDefaults.standard.bool(forKey: DefaultsKey.mouseButtonShortcutsEnabled),
-                mappings: mappings,
-                claimedByWheel: RadialMenuSupport.claimsMouseButton)
+            guard let config = mappings[button],
+                  AppFeature.mouseButtonShortcuts.isAvailable,
+                  UserDefaults.standard.bool(forKey: DefaultsKey.mouseButtonShortcutsEnabled),
+                  !RadialMenuSupport.claimsMouseButton(button)
             else { return Unmanaged.passUnretained(event) }
+
             consumedButtons.insert(button)
-            post(shortcut)
+            buttonDownLocation = event.location
+            buttonDownTimestamp = UInt64(event.timestamp)
             return nil
         }
 
