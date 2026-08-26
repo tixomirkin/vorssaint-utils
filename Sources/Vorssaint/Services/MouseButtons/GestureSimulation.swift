@@ -131,27 +131,30 @@ enum GestureSimulation {
 
             // Double-send end-events for macOS to avoid the "stuck bug" where a swipe does not transition properly
             // by scheduling it to fire again after 0.2s and 0.5s.
-            let e30Copy = CGEvent(copy: e30)
-            let e29Copy = CGEvent(copy: e29)
-
-            if let e30C = e30Copy, let e29C = e29Copy {
+            // CoreFoundation objects are reference counted, so capturing them in the closure
+            // will retain them as long as the timer is alive.
+            if let e30Copy = e30.copy(), let e29Copy = e29.copy() {
                 DispatchQueue.main.async {
                     doubleSendTimer?.invalidate()
                     tripleSendTimer?.invalidate()
 
                     doubleSendTimer = Timer.scheduledTimer(withTimeInterval: 0.2, repeats: false) { _ in
-                        e30C.post(tap: .cghidEventTap)
-                        e29C.post(tap: .cghidEventTap)
+                        if let e30C = e30Copy as? CGEvent, let e29C = e29Copy as? CGEvent {
+                            e30C.post(tap: CGEventTapLocation.cghidEventTap)
+                            e29C.post(tap: CGEventTapLocation.cghidEventTap)
+                        }
                     }
                     tripleSendTimer = Timer.scheduledTimer(withTimeInterval: 0.5, repeats: false) { _ in
-                        e30C.post(tap: .cghidEventTap)
-                        e29C.post(tap: .cghidEventTap)
+                        if let e30C = e30Copy as? CGEvent, let e29C = e29Copy as? CGEvent {
+                            e30C.post(tap: CGEventTapLocation.cghidEventTap)
+                            e29C.post(tap: CGEventTapLocation.cghidEventTap)
+                        }
                     }
                 }
             }
         }
 
-        e30.post(tap: .cghidEventTap)
-        e29.post(tap: .cghidEventTap)
+        e30.post(tap: CGEventTapLocation.cghidEventTap)
+        e29.post(tap: CGEventTapLocation.cghidEventTap)
     }
 }
