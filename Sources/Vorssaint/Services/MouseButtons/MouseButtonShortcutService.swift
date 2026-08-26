@@ -258,10 +258,10 @@ final class MouseButtonShortcutService: ObservableObject {
                     let incrementalDeltaX = event.location.x - lastDragLocation.x
                     let incrementalDeltaY = event.location.y - lastDragLocation.y
 
-                    if abs(deltaX) > abs(deltaY) {
+                    if GestureSimulation.activeSwipeType == .horizontal {
                         let scaledDelta = -incrementalDeltaX * threeFingerScaleH
                         GestureSimulation.updateDockSwipe(delta: scaledDelta, type: .horizontal)
-                    } else {
+                    } else if GestureSimulation.activeSwipeType == .vertical {
                         let scaledDelta = incrementalDeltaY * threeFingerScaleV
                         GestureSimulation.updateDockSwipe(delta: scaledDelta, type: .vertical)
                     }
@@ -338,9 +338,9 @@ final class MouseButtonShortcutService: ObservableObject {
                     let exitSpeedX = -incrementalDeltaX * 100.0
                     let exitSpeedY = incrementalDeltaY * 100.0
 
-                    if abs(deltaX) > abs(deltaY) {
+                    if GestureSimulation.activeSwipeType == .horizontal {
                         GestureSimulation.endDockSwipe(delta: 0, type: .horizontal, exitSpeed: exitSpeedX)
-                    } else {
+                    } else if GestureSimulation.activeSwipeType == .vertical {
                         GestureSimulation.endDockSwipe(delta: 0, type: .vertical, exitSpeed: exitSpeedY)
                     }
                 }
