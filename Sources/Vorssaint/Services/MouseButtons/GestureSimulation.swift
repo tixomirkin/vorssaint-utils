@@ -25,31 +25,45 @@ enum GestureSimulation {
 
     private static var currentOriginOffset: Double = 0
     private static var isSynthesizing = false
+    static var activeSwipeType: DockSwipeType?
+    private static var doubleSendTimer: Timer?
+    private static var tripleSendTimer: Timer?
 
     static func beginDockSwipe(delta: Double, type: DockSwipeType) {
+        DispatchQueue.main.async {
+            doubleSendTimer?.invalidate()
+            tripleSendTimer?.invalidate()
+            doubleSendTimer = nil
+            tripleSendTimer = nil
+        }
         currentOriginOffset = delta
         isSynthesizing = true
+        activeSwipeType = type
         postDockSwipe(delta: delta, type: type, phase: .began, exitSpeed: 0)
     }
 
     static func updateDockSwipe(delta: Double, type: DockSwipeType) {
-        guard isSynthesizing else { return }
+        guard isSynthesizing, let activeType = activeSwipeType else { return }
         if delta == 0 { return }
-        postDockSwipe(delta: delta, type: type, phase: .changed, exitSpeed: 0)
+        currentOriginOffset += delta
+        postDockSwipe(delta: currentOriginOffset, type: activeType, phase: .changed, exitSpeed: 0)
     }
 
     static func endDockSwipe(delta: Double, type: DockSwipeType, exitSpeed: Double = 0) {
-        guard isSynthesizing else { return }
-        postDockSwipe(delta: delta, type: type, phase: .ended, exitSpeed: exitSpeed)
+        guard isSynthesizing, let activeType = activeSwipeType else { return }
+        // For the end gesture, we also pass the final accumulated offset
+        postDockSwipe(delta: currentOriginOffset, type: activeType, phase: .ended, exitSpeed: exitSpeed)
         isSynthesizing = false
         currentOriginOffset = 0
+        activeSwipeType = nil
     }
 
     static func cancelDockSwipe(delta: Double, type: DockSwipeType) {
-        guard isSynthesizing else { return }
-        postDockSwipe(delta: delta, type: type, phase: .cancelled, exitSpeed: 0)
+        guard isSynthesizing, let activeType = activeSwipeType else { return }
+        postDockSwipe(delta: delta, type: activeType, phase: .cancelled, exitSpeed: 0)
         isSynthesizing = false
         currentOriginOffset = 0
+        activeSwipeType = nil
     }
 
     private static func postDockSwipe(delta: Double, type: DockSwipeType, phase: Phase, exitSpeed: Double) {
@@ -60,24 +74,38 @@ enum GestureSimulation {
         guard let e29 = CGEvent(source: nil),
               let e30 = CGEvent(source: nil) else { return }
 
+        // Helper to forcefully set event fields, since rawValue: 55 / 41 / etc are not present in the Swift enum.
+        // We use unsafeBitCast to bypass the optional initialization which would fail and skip assignment.
+        func setDoubleField(_ event: CGEvent, _ fieldRawValue: UInt32, _ value: Double) {
+            let field = unsafeBitCast(fieldRawValue, to: CGEventField.self)
+            event.setDoubleValueField(field, value: value)
+        }
+
+        func setIntegerField(_ event: CGEvent, _ fieldRawValue: UInt32, _ value: Int64) {
+            let field = unsafeBitCast(fieldRawValue, to: CGEventField.self)
+            event.setIntegerValueField(field, value: value)
+        }
+
         // Type 29 (NSEventTypeGesture)
         e29.type = CGEventType(rawValue: 29)! // NSEventTypeGesture
-        e29.setDoubleValueField(CGEventField(rawValue: 41)!, value: 33231) // Magic value
+        setDoubleField(e29, 55, 29)
+        setDoubleField(e29, 41, 33231) // Magic value
 
         // Type 30 (used for Dock Swipes)
         e30.type = CGEventType(rawValue: 30)! // NSEventTypeMagnify
-        e30.setDoubleValueField(CGEventField(rawValue: 110)!, value: 13) // kIOHIDEventTypeDockSwipe is 13
-        e30.setDoubleValueField(CGEventField(rawValue: 132)!, value: Double(phase.rawValue))
-        e30.setDoubleValueField(CGEventField(rawValue: 134)!, value: Double(phase.rawValue))
+        setDoubleField(e30, 55, 30)
+        setDoubleField(e30, 110, 13) // kIOHIDEventTypeDockSwipe is 13
+        setDoubleField(e30, 132, Double(phase.rawValue))
+        setDoubleField(e30, 134, Double(phase.rawValue))
 
-        e30.setDoubleValueField(CGEventField(rawValue: 124)!, value: currentOriginOffset)
+        setDoubleField(e30, 124, currentOriginOffset)
 
         // Origin offset encoding hack as seen in MMF
         let ofsFloat32 = Float32(currentOriginOffset)
         let ofsInt32 = ofsFloat32.bitPattern
         let ofsInt64 = Int64(ofsInt32)
-        e30.setIntegerValueField(CGEventField(rawValue: 135)!, value: ofsInt64)
-        e30.setDoubleValueField(CGEventField(rawValue: 41)!, value: 33231)
+        setIntegerField(e30, 135, ofsInt64)
+        setDoubleField(e30, 41, 33231)
 
         var weirdTypeOrSum: Double = -1
         switch type {
@@ -89,20 +117,44 @@ enum GestureSimulation {
             weirdTypeOrSum = 4.203895392974451e-45
         }
 
-        e30.setDoubleValueField(CGEventField(rawValue: 119)!, value: weirdTypeOrSum)
-        e30.setDoubleValueField(CGEventField(rawValue: 139)!, value: weirdTypeOrSum)
+        setDoubleField(e30, 119, weirdTypeOrSum)
+        setDoubleField(e30, 139, weirdTypeOrSum)
 
-        e30.setDoubleValueField(CGEventField(rawValue: 123)!, value: Double(type.rawValue))
-        e30.setDoubleValueField(CGEventField(rawValue: 165)!, value: Double(type.rawValue))
+        setDoubleField(e30, 123, Double(type.rawValue))
+        setDoubleField(e30, 165, Double(type.rawValue))
 
-        e30.setIntegerValueField(CGEventField(rawValue: 136)!, value: 0) // invertedFromDevice
+        setIntegerField(e30, 136, 0) // invertedFromDevice
 
         if phase == .ended || phase == .cancelled {
-            e30.setDoubleValueField(CGEventField(rawValue: 129)!, value: exitSpeed)
-            e30.setDoubleValueField(CGEventField(rawValue: 130)!, value: exitSpeed)
+            setDoubleField(e30, 129, exitSpeed)
+            setDoubleField(e30, 130, exitSpeed)
+
+            // Double-send end-events for macOS to avoid the "stuck bug" where a swipe does not transition properly
+            // by scheduling it to fire again after 0.2s and 0.5s.
+            // CoreFoundation objects are reference counted, so capturing them in the closure
+            // will retain them as long as the timer is alive.
+            if let e30Copy = e30.copy(), let e29Copy = e29.copy() {
+                DispatchQueue.main.async {
+                    doubleSendTimer?.invalidate()
+                    tripleSendTimer?.invalidate()
+
+                    doubleSendTimer = Timer.scheduledTimer(withTimeInterval: 0.2, repeats: false) { _ in
+                        if let e30C = e30Copy as? CGEvent, let e29C = e29Copy as? CGEvent {
+                            e30C.post(tap: CGEventTapLocation.cghidEventTap)
+                            e29C.post(tap: CGEventTapLocation.cghidEventTap)
+                        }
+                    }
+                    tripleSendTimer = Timer.scheduledTimer(withTimeInterval: 0.5, repeats: false) { _ in
+                        if let e30C = e30Copy as? CGEvent, let e29C = e29Copy as? CGEvent {
+                            e30C.post(tap: CGEventTapLocation.cghidEventTap)
+                            e29C.post(tap: CGEventTapLocation.cghidEventTap)
+                        }
+                    }
+                }
+            }
         }
 
-        e30.post(tap: .cghidEventTap)
-        e29.post(tap: .cghidEventTap)
+        e30.post(tap: CGEventTapLocation.cghidEventTap)
+        e29.post(tap: CGEventTapLocation.cghidEventTap)
     }
 }
